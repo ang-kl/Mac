@@ -400,10 +400,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let end = endDate else { return "Awake until turned off" }
         let r = max(0, Int(end.timeIntervalSinceNow))
         let d = r / 86400, h = (r % 86400) / 3600, m = (r % 3600) / 60
-        let paused = idleCountdownOn && userIdleSeconds() < 30 ? " (paused while you work)" : ""
-        if d > 0 { return "Awake — \(d)d \(h)h left" + paused }
-        if h > 0 { return "Awake — \(h)h \(m)m left" + paused }
-        return "Awake — \(m)m left" + paused
+        var suffix = endClause(end)
+        if idleCountdownOn && userIdleSeconds() < 30 { suffix += " (paused while you work)" }
+        if d > 0 { return "Awake — \(d)d \(h)h left" + suffix }
+        if h > 0 { return "Awake — \(h)h \(m)m left" + suffix }
+        return "Awake — \(m)m left" + suffix
+    }
+
+    // Likely end time in brackets: "(until HH:MM)", or "(until HH:MM DD-MM)"
+    // when the timer runs past midnight into another day.
+    private func endClause(_ end: Date) -> String {
+        let fmt = DateFormatter()
+        fmt.dateFormat = Calendar.current.isDate(end, inSameDayAs: Date()) ? "HH:mm" : "HH:mm dd-MM"
+        return " (until \(fmt.string(from: end)))"
     }
 
     // Seconds since the last keyboard/mouse/trackpad input. Cheap in-process
