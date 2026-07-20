@@ -51,6 +51,12 @@ What it does:
 - **Keep Display On** (off by default): by default the *screen* is allowed to sleep while the *system* stays awake — best for long unattended jobs. There's also **Turn Display Off Now** to blank the screen immediately (the job keeps running).
 - **Keep Disk Active** (on by default): holds a disk-idle assertion so an HDD / iCloud sync keeps flowing during long syncs.
 - **Download iCloud Folder Locally…**: pick any iCloud Drive folder (e.g. your GitHub backup) and it asks macOS to pull every cloud-only file down to the local disk. Keep the Mac awake until Finder shows no cloud ☁ icons next to the files.
+- **System Insights** submenu — a mini Activity Monitor in the cup:
+  - *KeepAwake app: N MB* — the app's own footprint (typically 10–20 MB, ~0% CPU; it's essentially free to keep in the menu bar).
+  - *Memory: X of 16 GB used — pressure: normal/high/critical* — same "used" definition as Activity Monitor.
+  - *Network: ↓ / ↑ throughput* — whole-machine traffic, refreshed every 30 s.
+  - *AI apps running* — Claude, ChatGPT, Copilot, Ollama, Gemini, Cursor, etc., each with memory and CPU. Handy when the Claude app keeps retrying: **traffic flowing + CPU busy = it's working; retries with ~0 KB/s = your connection is the problem** (status.claude.ai only reports Anthropic's side, not your Wi-Fi).
+  - *Top memory* and *Top CPU* apps (helpers rolled up per app), plus **Open Activity Monitor** for the full picture.
 
 To have it start on login: System Settings → General → Login Items → add `KeepAwake.app`.
 
