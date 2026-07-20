@@ -438,7 +438,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func openActivityMonitor() {
-        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
+        // Catalina+ keeps it under /System/Applications; older macOS under /Applications.
+        let paths = ["/System/Applications/Utilities/Activity Monitor.app",
+                     "/Applications/Utilities/Activity Monitor.app"]
+        if let path = paths.first(where: { FileManager.default.fileExists(atPath: $0) }) {
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        }
     }
 
     // MARK: - Actions
