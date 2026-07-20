@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+# keepawake — keep a Mac awake while a long-running command works, or toggle it on/off.
+# Uses only macOS built-ins: caffeinate (and optionally pmset for lid-closed mode).
+set -euo pipefail
+
+PID_FILE="${TMPDIR:-/tmp}/keepawake.pid"
+LID_MARKER="${TMPDIR:-/tmp}/keepawake.lidclosed"
+
+usage() {
+  cat <<'EOF'
+keepawake — prevent your Mac from sleeping (built on Apple's caffeinate)
+
+Usage:
+  keepawake -- <command> [args...]   Stay awake exactly while <command> runs
+  keepawake on [hours]               Stay awake in the background (optionally for N hours)
+  keepawake off                      Back to normal sleep behavior
+  keepawake status                   Show whether keepawake is active
+
+Options:
+  --lid-closed   Also keep running with the lid closed (needs AC power + admin
+                 password; uses `sudo pmset disablesleep`, restored on exit/off)
+
+Examples:
+  keepawake -- python3 sync.py       # awake until sync.py finishes
+  keepawake on 8                     # awake for the next 8 hours
+  keepawake --lid-closed on          # awake even with the lid shut (on AC power)
+EOF
+}
+
+die() { echo "keepawake: $*" >&2; exit 1; }
+
+[ "$(uname)" = "Darwin" ] || die "this tool only works on macOS"
+command -v caffeinate >/dev/null || die "caffeinate not found (should ship with macOS)"
+
+lid_on() {
+  echo "Lid-closed mode: disabling sleep entirely (admin password may be asked)."
+  echo "Keep the Mac on AC power — running lid-closed on battery drains it fast."
+  sudo pmset -a disablesleep 1
+  touch "$LID_MARKER"
+}
+
+lid_off() {
+  if [ -e "$LID_MARKER" ]; then
+    sudo pmset -a disablesleep 0 && rm -f "$LID_MARKER"
+    echo "Lid-closed mode off: normal sleep restored."
+  fi
+}
+
+LID=0
+if [ "${1:-}" = "--lid-closed" ]; then LID=1; shift; fi
+
+case "${1:-}" in
+  --)
+    shift
+    [ $# -gt 0 ] || die "no command given after --"
+    if [ "$LID" = 1 ]; then
+      lid_on
+      trap lid_off EXIT INT TERM
+    fi
+    # -d display, -i idle sleep, -m disk, -s system sleep (on AC)
+    exec_status=0
+    caffeinate -dims "$@" || exec_status=$?
+    exit "$exec_status"
+    ;;
+
+  on)
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+      die "already on (pid $(cat "$PID_FILE")) — run 'keepawake off' first"
+    fi
+    hours="${2:-}"
+    if [ -n "$hours" ]; then
+      case "$hours" in (*[!0-9]*|'') die "hours must be a whole number" ;; esac
+      caffeinate -dims -t "$((hours * 3600))" &
+    else
+      caffeinate -dims &
+    fi
+    echo $! > "$PID_FILE"
+    [ "$LID" = 1 ] && lid_on
+    echo "Keep-awake ON${hours:+ for $hours hour(s)} (pid $(cat "$PID_FILE")). Turn off with: keepawake off"
+    ;;
+
+  off)
+    if [ -f "$PID_FILE" ]; then
+      kill "$(cat "$PID_FILE")" 2>/dev/null || true
+      rm -f "$PID_FILE"
+      echo "Keep-awake OFF."
+    else
+      echo "Keep-awake was not on."
+    fi
+    lid_off
+    ;;
+
+  status)
+    if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
+      echo "Keep-awake is ON (pid $(cat "$PID_FILE"))."
+    else
+      [ -f "$PID_FILE" ] && rm -f "$PID_FILE"   # stale file from a reboot/kill
+      echo "Keep-awake is OFF."
+    fi
+    [ -e "$LID_MARKER" ] && echo "Lid-closed mode is ON (sleep fully disabled)."
+    pmset -g assertions | grep -E "PreventUserIdleSystemSleep|PreventSystemSleep" || true
+    ;;
+
+  -h|--help|'')
+    usage
+    ;;
+
+  *)
+    usage >&2
+    die "unknown option: $1"
+    ;;
+esac
