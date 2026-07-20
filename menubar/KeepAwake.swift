@@ -34,6 +34,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var netInKBs: Double = -1   // -1 = not measured yet
     private var netOutKBs: Double = -1
 
+    // Insights are gathered on this queue and cached; the menu only ever reads
+    // the cache. The main thread must never wait on a subprocess — while a menu
+    // is open it captures all input, so any stall freezes typing system-wide.
+    private let workQueue = DispatchQueue(label: "keepawake.insights")
+    private var refreshing = false
+    private var cachedApps: [AppUsage] = []
+    private var cachedMemoryLine = "Memory: gathering…"
+    private var cachedOwnMB: Double = 0
+
     private let presets: [(label: String, hours: Double)] = [
         ("1 hour", 1), ("4 hours", 4), ("8 hours", 8), ("12 hours", 12),
         ("1 day", 24), ("2 days", 48), ("5 days", 120),
@@ -94,8 +103,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         source.resume()
         memorySource = source
 
-        sampleNetwork()
-        // Always-on 30 s tick: countdown/power checks while active, network sampling always.
+        refreshInsights()
+        // Always-on 30 s tick: countdown/power checks while active, insights refresh always.
         tick = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.onTick()
         }
@@ -119,7 +128,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         active = true
         warnedNearEnd = false
         sleptWhileActive = false
-        wasOnAC = onACPower()
+        wasOnAC = nil   // set by the next background refresh; never block the main thread
         if let seconds = seconds {
             totalSeconds = seconds
             endDate = Date(timeIntervalSinceNow: seconds)
@@ -173,8 +182,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if diskAssertion != 0 { IOPMAssertionRelease(diskAssertion); diskAssertion = 0 }
     }
 
+    // Fast main-thread work only; anything that spawns a subprocess goes
+    // through refreshInsights() on the background queue.
     private func onTick() {
-        sampleNetwork()
+        refreshInsights()
         guard active else { return }
         if let end = endDate {
             let remaining = end.timeIntervalSinceNow
@@ -188,13 +199,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 if effectsOn { notify("15 minutes left", "Keep Awake ends soon. Pick a new duration to extend.") }
             }
         }
-        let nowAC = onACPower()
-        if let was = wasOnAC, was != nowAC, healthAlertsOn {
-            notify(nowAC ? "AC power connected" : "Running on battery",
-                   nowAC ? "Back on mains power." : "Charger unplugged! Plug in AC or your job may die with the battery.")
-        }
-        wasOnAC = nowAC
         refreshIcon()
+    }
+
+    // Gathers everything subprocess-based off the main thread, then publishes
+    // the results (and the AC-power change alert) back on the main thread.
+    private func refreshInsights() {
+        if refreshing { return }
+        refreshing = true
+        workQueue.async { [weak self] in
+            guard let self = self else { return }
+            let apps = self.aggregatedApps()
+            let mem = self.systemMemory()
+            let own = self.ownMemoryMB()
+            let net = self.networkTotals()
+            let ac = self.onACPower()
+            DispatchQueue.main.async {
+                self.refreshing = false
+                self.cachedApps = apps
+                self.cachedOwnMB = own
+                self.cachedMemoryLine = String(format: "Memory: %.1f of %.0f GB used — pressure: %@",
+                                               mem.usedGB, mem.totalGB, self.memoryState)
+                self.updateNetRates(net)
+                if self.active, let was = self.wasOnAC, was != ac, self.healthAlertsOn {
+                    self.notify(ac ? "AC power connected" : "Running on battery",
+                                ac ? "Back on mains power." : "Charger unplugged! Plug in AC or your job may die with the battery.")
+                }
+                self.wasOnAC = ac
+            }
+        }
     }
 
     // MARK: - System events
@@ -304,9 +337,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             m.addItem(item)
         }
 
-        info(String(format: "KeepAwake app: %.0f MB, ~0%% CPU", ownMemoryMB()))
-        let mem = systemMemory()
-        info(String(format: "Memory: %.1f of %.0f GB used — pressure: %@", mem.usedGB, mem.totalGB, memoryState))
+        // Cached values only — never spawn a subprocess while the menu is open.
+        if cachedOwnMB > 0 {
+            info(String(format: "KeepAwake app: %.0f MB, ~0%% CPU", cachedOwnMB))
+        } else {
+            info("KeepAwake app: measuring…")
+        }
+        info(cachedMemoryLine)
         if netInKBs >= 0 {
             info("Network: ↓ \(rateString(netInKBs))  ↑ \(rateString(netOutKBs))")
         } else {
@@ -314,7 +351,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         m.addItem(.separator())
 
-        let apps = aggregatedApps()
+        let apps = cachedApps
+        if apps.isEmpty {
+            info("Gathering app list… (reopen in a few seconds)")
+        }
         let ai = apps.filter { app in aiNames.contains { app.name.lowercased().contains($0) } }
         info("AI apps running:")
         if ai.isEmpty {
@@ -416,8 +456,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         return (inB, outB)
     }
 
-    private func sampleNetwork() {
-        let totals = networkTotals()
+    // Main-thread only: turns a totals sample into down/up rates.
+    private func updateNetRates(_ totals: (inBytes: Double, outBytes: Double)) {
         let now = Date()
         if let last = lastNetSample {
             let dt = now.timeIntervalSince(last.time)
@@ -480,7 +520,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     @objc private func toggleDisk() { keepDiskOn.toggle(); applyOptionalAssertions() }
 
     @objc private func displayOffNow() {
-        run("/usr/bin/pmset", ["displaysleepnow"])
+        spawn("/usr/bin/pmset", ["displaysleepnow"])
     }
 
     // Pull cloud-only (evicted) iCloud files down to the local disk, so e.g. a
@@ -561,8 +601,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         run("/usr/bin/pmset", ["-g", "batt"]).contains("AC Power")
     }
 
-    @discardableResult
-    private func run(_ path: String, _ args: [String]) -> String {
+    // Blocking with a hard deadline; call ONLY from workQueue, never the main
+    // thread. Output is read concurrently so a full pipe can't deadlock.
+    private func run(_ path: String, _ args: [String], timeout: TimeInterval = 5) -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: path)
         process.arguments = args
@@ -570,16 +611,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         process.standardOutput = pipe
         process.standardError = Pipe()
         do { try process.run() } catch { return "" }
-        process.waitUntilExit()
-        return String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        var data = Data()
+        let done = DispatchSemaphore(value: 0)
+        DispatchQueue.global(qos: .utility).async {
+            data = pipe.fileHandleForReading.readDataToEndOfFile()
+            done.signal()
+        }
+        if done.wait(timeout: .now() + timeout) == .timedOut {
+            process.terminate()
+            return ""
+        }
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+
+    // Fire-and-forget for commands whose output we don't need; safe anywhere.
+    private func spawn(_ path: String, _ args: [String]) {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: path)
+        process.arguments = args
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+        try? process.run()
     }
 
     // Notification via osascript: works for an unsigned, self-built app bundle.
     private func notify(_ title: String, _ text: String) {
         let escapedTitle = title.replacingOccurrences(of: "\"", with: "\\\"")
         let escapedText = text.replacingOccurrences(of: "\"", with: "\\\"")
-        run("/usr/bin/osascript",
-            ["-e", "display notification \"\(escapedText)\" with title \"\(escapedTitle)\""])
+        spawn("/usr/bin/osascript",
+              ["-e", "display notification \"\(escapedText)\" with title \"\(escapedTitle)\""])
     }
 }
 
