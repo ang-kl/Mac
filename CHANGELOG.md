@@ -15,3 +15,4 @@ rebuild (`cd menubar && ./build.sh`).
 | v0.3.06 | #6 | Lightweight by default: Background Monitoring opt-in with confirmation popup; Keep Disk Active defaults off |
 | v0.4.07 | #7 | High-contrast 14 pt menu text, menu-bar countdown in last 15 min, one-time iCloud folder setup with hourly auto-download |
 | v0.4.08 | #8 | Adopt v#.#.## versioning starting at v0.0.01, add this changelog, show the running version inside the menu |
+| v0.5.09 | #9 | iCloud auto-download gets a timing submenu (30 min / 1 h / 3 h / 6 h) and resource intelligence: runs are skipped and retried later while the Mac is hot, memory is under pressure, or on battery |

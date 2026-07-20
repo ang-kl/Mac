@@ -76,11 +76,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { UserDefaults.standard.string(forKey: "icloudAutoPath") }
         set { UserDefaults.standard.set(newValue, forKey: "icloudAutoPath") }
     }
-    private var autoDownloadOn: Bool {   // re-request the download hourly while awake
+    private var autoDownloadOn: Bool {   // re-request the download on a schedule while awake
         get { UserDefaults.standard.object(forKey: "icloudAutoOn") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "icloudAutoOn") }
     }
-    private var lastAutoDownload: Date?
+    private var autoDownloadMinutes: Int {   // schedule interval
+        get { UserDefaults.standard.object(forKey: "icloudAutoMinutes") as? Int ?? 60 }
+        set { UserDefaults.standard.set(newValue, forKey: "icloudAutoMinutes") }
+    }
+    private var lastAutoDownload: Date?   // last run that actually happened
+    private var lastAutoAttempt: Date?    // last time we checked (incl. skipped runs)
 
     // MARK: - Lifecycle
 
@@ -201,9 +206,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func onTick() {
         if monitoringOn { refreshInsights() }
         guard active else { return }
+        // Auto-download when the interval elapsed; if the last try was skipped
+        // for lack of resources, re-check no more often than every 5 minutes.
         if autoDownloadOn, let path = autoDownloadPath,
-           lastAutoDownload.map({ Date().timeIntervalSince($0) > 3600 }) ?? true {
-            performICloudDownload(path, announce: false)
+           lastAutoDownload.map({ Date().timeIntervalSince($0) > Double(autoDownloadMinutes) * 60 }) ?? true,
+           lastAutoAttempt.map({ Date().timeIntervalSince($0) > 300 }) ?? true {
+            lastAutoAttempt = Date()
+            performICloudDownload(path, announce: false, respectResources: true)
         }
         if let end = endDate {
             let remaining = end.timeIntervalSinceNow
@@ -339,8 +348,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(icloud)
         if let path = autoDownloadPath {
             let name = (path as NSString).lastPathComponent
-            addToggle(menu, "Auto-Download \"\(name)\" hourly while awake",
+            addToggle(menu, "Auto-Download \"\(name)\" while awake",
                       autoDownloadOn, #selector(toggleAutoDownload))
+            let intervalMenu = NSMenu()
+            for minutes in [30, 60, 180, 360] {
+                let label = minutes < 60 ? "Every \(minutes) min" : "Every \(minutes / 60) h"
+                let item = NSMenuItem(title: label, action: #selector(setAutoInterval(_:)), keyEquivalent: "")
+                item.target = self
+                item.tag = minutes
+                item.state = minutes == autoDownloadMinutes ? .on : .off
+                intervalMenu.addItem(item)
+            }
+            let intervalItem = NSMenuItem(title: "Auto-Download Timing", action: nil, keyEquivalent: "")
+            intervalItem.submenu = intervalMenu
+            menu.addItem(intervalItem)
         }
         menu.addItem(.separator())
 
@@ -619,10 +640,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let alert = NSAlert()
         alert.messageText = "Keep \"\(url.lastPathComponent)\" auto-downloaded?"
         alert.informativeText = """
-            KeepAwake can re-request the download every hour while Keep Awake is on, \
-            so this folder always stays fully on this Mac — no further steps from you.
+            KeepAwake can re-request the download on a schedule while Keep Awake is on \
+            (every hour by default — change it under Auto-Download Timing), so this \
+            folder always stays fully on this Mac. Runs are skipped automatically while \
+            the Mac is hot, low on memory, or on battery, and retried later.
             """
-        alert.addButton(withTitle: "Auto-Download Hourly")
+        alert.addButton(withTitle: "Auto-Download on Schedule")
         alert.addButton(withTitle: "Just This Once")
         autoDownloadOn = alert.runModal() == .alertFirstButtonReturn
         performICloudDownload(url.path, announce: true)
@@ -632,12 +655,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         autoDownloadOn.toggle()
     }
 
+    @objc private func setAutoInterval(_ sender: NSMenuItem) {
+        autoDownloadMinutes = sender.tag
+    }
+
     // Walks the folder on the background queue (a big folder must never block
     // the main thread) and asks macOS to download every cloud-only file.
-    private func performICloudDownload(_ path: String, announce: Bool) {
-        lastAutoDownload = Date()
+    // With respectResources, the run is skipped — and retried later by the
+    // tick — while the Mac is hot, memory is under pressure, or on battery.
+    private func performICloudDownload(_ path: String, announce: Bool, respectResources: Bool = false) {
         workQueue.async { [weak self] in
             guard let self = self else { return }
+            if respectResources {
+                let thermal = ProcessInfo.processInfo.thermalState
+                let hot = thermal == .serious || thermal == .critical
+                let memBusy = DispatchQueue.main.sync { self.memoryState != "normal" }
+                let onBattery = !self.onACPower()
+                if hot || memBusy || onBattery { return }
+            }
+            DispatchQueue.main.async { self.lastAutoDownload = Date() }
             let url = URL(fileURLWithPath: path)
             let fm = FileManager.default
             var queued = 0
