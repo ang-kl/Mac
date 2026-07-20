@@ -1,6 +1,6 @@
 # Mac
 
-MacBook utilities. First up: **keepawake** — stop your Mac from sleeping while a long-running CLI job works (e.g. while you're travelling). Two flavours, both built only on Apple's own tools (`caffeinate`, IOKit, `pmset`), so they work on every MacBook — Air or Pro, Intel or Apple Silicon.
+MacBook utilities. Versions use `v#.#.##` (two-digit build counter since the first release) — see [CHANGELOG.md](CHANGELOG.md); the app shows its own version at the bottom of the cup menu. First up: **keepawake** — stop your Mac from sleeping while a long-running CLI job works (e.g. while you're travelling). Two flavours, both built only on Apple's own tools (`caffeinate`, IOKit, `pmset`), so they work on every MacBook — Air or Pro, Intel or Apple Silicon.
 
 ## 1. CLI script — `scripts/keepawake`
 
