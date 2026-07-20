@@ -17,6 +17,7 @@ Use:
 ```sh
 keepawake -- python3 my_long_job.py   # Mac stays awake exactly while the command runs (safest)
 keepawake on 8                        # stay awake for 8 hours
+keepawake on 2d                       # stay awake for 2 days
 keepawake on                          # stay awake until you turn it off
 keepawake off                         # back to normal
 keepawake status                      # is it on?
@@ -35,20 +36,37 @@ keepawake off                 # restores normal sleep — don't forget this
 
 ## 2. Menu-bar app — `menubar/`
 
-A tiny coffee-cup toggle in the menu bar. Build once on your Mac (needs the free Xcode Command Line Tools — `xcode-select --install`):
+A coffee-cup toggle in the menu bar. Build once on your Mac (needs the free Xcode Command Line Tools — `xcode-select --install`):
 
 ```sh
 cd menubar && ./build.sh
 open KeepAwake.app
 ```
 
-Click the cup: **Keep Awake** (until you turn it off), or a timed 1h/4h/8h option. Filled cup = active. To have it start on login: System Settings → General → Login Items → add `KeepAwake.app`.
+What it does:
 
-> First launch: if macOS warns the app is from an unidentified developer, right-click → Open (it's unsigned because you built it yourself).
+- **Presets**: 1h / 4h / 8h / 12h / 1 day / 2 days / 5 days / Custom… (any number of hours), or indefinitely until you turn it off. The menu shows the time remaining.
+- **Effects** (toggleable): the cup starts full and *drains as the timer counts down*, and you get notifications at start, at 15 minutes left, and when the timer finishes.
+- **Health Alerts** (toggleable): notifications when memory pressure gets high or critical (worth having on a 16 GB machine), when the Mac runs hot enough to throttle, when the charger is unplugged, and when sleep interrupted keep-awake (e.g. lid closed) so you know your background job was paused.
+- **Keep Display On** (off by default): by default the *screen* is allowed to sleep while the *system* stays awake — best for long unattended jobs. There's also **Turn Display Off Now** to blank the screen immediately (the job keeps running).
+- **Keep Disk Active** (on by default): holds a disk-idle assertion so an HDD / iCloud sync keeps flowing during long syncs.
+- **Download iCloud Folder Locally…**: pick any iCloud Drive folder (e.g. your GitHub backup) and it asks macOS to pull every cloud-only file down to the local disk. Keep the Mac awake until Finder shows no cloud ☁ icons next to the files.
+
+To have it start on login: System Settings → General → Login Items → add `KeepAwake.app`.
+
+> First launch: if macOS warns the app is from an unidentified developer, right-click → Open (it's unsigned because you built it yourself). Notifications appear via Script Editor — if they don't show, allow it under System Settings → Notifications.
+
+### Keeping your iCloud "GitHub storage" fully local
+
+Two settings matter so a copy actually lives on your drive, not just in the cloud:
+
+1. System Settings → Apple ID → iCloud → iCloud Drive → turn **off** "Optimize Mac Storage" (otherwise macOS may evict local copies when disk gets full).
+2. Use **Download iCloud Folder Locally…** in the menu app (or right-click the folder in Finder → "Download Now") and keep the Mac awake while it downloads.
 
 ## Travelling checklist
 
-- Keep the Mac **plugged into AC power** — sleep prevention on battery is limited by design, and long jobs will drain it anyway.
+- Keep the Mac **plugged into AC power** — sleep prevention on battery is limited by design, and long jobs will drain it anyway. The app alerts you if the charger gets unplugged.
 - Prefer `keepawake -- <command>`: the Mac returns to normal by itself the moment your job finishes.
 - If the lid must be closed, use `--lid-closed` and AC power.
-- Set **System Settings → Lock Screen → Turn display off** as you like; the display can sleep while the system stays awake.
+- Let the display sleep (leave "Keep Display On" off, or use "Turn Display Off Now") — it saves power and heat while the system keeps working.
+- On an older i5 / 16 GB machine: close browsers and heavy apps before leaving so the background job has the memory to itself — the app's Health Alerts will warn you if pressure climbs anyway.

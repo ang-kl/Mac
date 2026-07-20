@@ -12,7 +12,8 @@ keepawake — prevent your Mac from sleeping (built on Apple's caffeinate)
 
 Usage:
   keepawake -- <command> [args...]   Stay awake exactly while <command> runs
-  keepawake on [hours]               Stay awake in the background (optionally for N hours)
+  keepawake on [duration]            Stay awake in the background; duration is
+                                     hours (e.g. 8) or days (e.g. 2d)
   keepawake off                      Back to normal sleep behavior
   keepawake status                   Show whether keepawake is active
 
@@ -23,6 +24,7 @@ Options:
 Examples:
   keepawake -- python3 sync.py       # awake until sync.py finishes
   keepawake on 8                     # awake for the next 8 hours
+  keepawake on 2d                    # awake for the next 2 days
   keepawake --lid-closed on          # awake even with the lid shut (on AC power)
 EOF
 }
@@ -67,16 +69,22 @@ case "${1:-}" in
     if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
       die "already on (pid $(cat "$PID_FILE")) — run 'keepawake off' first"
     fi
-    hours="${2:-}"
-    if [ -n "$hours" ]; then
-      case "$hours" in (*[!0-9]*|'') die "hours must be a whole number" ;; esac
-      caffeinate -dims -t "$((hours * 3600))" &
+    duration="${2:-}"
+    if [ -n "$duration" ]; then
+      case "$duration" in
+        *d) n="${duration%d}"
+            case "$n" in (*[!0-9]*|'') die "duration must be hours (e.g. 8) or days (e.g. 2d)" ;; esac
+            secs=$((n * 86400)) ;;
+        *)  case "$duration" in (*[!0-9]*|'') die "duration must be hours (e.g. 8) or days (e.g. 2d)" ;; esac
+            secs=$((duration * 3600)) ;;
+      esac
+      caffeinate -dims -t "$secs" &
     else
       caffeinate -dims &
     fi
     echo $! > "$PID_FILE"
     [ "$LID" = 1 ] && lid_on
-    echo "Keep-awake ON${hours:+ for $hours hour(s)} (pid $(cat "$PID_FILE")). Turn off with: keepawake off"
+    echo "Keep-awake ON${duration:+ for $duration} (pid $(cat "$PID_FILE")). Turn off with: keepawake off"
     ;;
 
   off)
