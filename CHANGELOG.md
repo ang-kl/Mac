@@ -19,3 +19,4 @@ rebuild (`cd menubar && ./build.sh`).
 | v0.0.010 | #11 | Auto-download also yields to AI work: scheduled runs are skipped and retried while Claude (CLI or app) or another AI process is actively using CPU |
 | v0.0.011 | #12 | Fix faint insight text on modern macOS: info rows are enabled (non-dimmed) inert items, so the 14 pt full-contrast color actually renders |
 | v0.0.012 | #13 | "Countdown Only While Idle" toggle (off by default): timed hours only burn while the Mac is untouched; status shows "(paused while you work)" during activity |
+| v0.0.013 | #14 | Status line shows the likely end time in brackets: "(until HH:MM)", or "(until HH:MM DD-MM)" when the timer crosses into another day |
