@@ -47,11 +47,12 @@ What it does:
 
 - **Presets**: 1h / 4h / 8h / 12h / 1 day / 2 days / 5 days / Custom… (any number of hours), or indefinitely until you turn it off. The menu shows the time remaining.
 - **Effects** (toggleable): the cup starts full and *drains as the timer counts down*, and you get notifications at start, at 15 minutes left, and when the timer finishes.
-- **Health Alerts** (toggleable): notifications when memory pressure gets high or critical (worth having on a 16 GB machine), when the Mac runs hot enough to throttle, when the charger is unplugged, and when sleep interrupted keep-awake (e.g. lid closed) so you know your background job was paused.
+- **Lightweight by default**: out of the box the app only keeps the Mac awake — no background checks run at all, and it idles at ~10–20 MB / 0% CPU. Everything below that needs polling is gated behind **Background Monitoring** (off by default): turning it on shows a popup ("Run Background Checks" / "Keep It Lightweight") explaining the cost (~0.1% CPU) before anything starts.
+- **Health Alerts** (toggleable, free even in lightweight mode): notifications when memory pressure gets high or critical (worth having on a 16 GB machine), when the Mac runs hot enough to throttle, and when sleep interrupted keep-awake (e.g. lid closed). These come from kernel events, not polling — zero cost. The charger-unplugged alert is the one exception: it needs Background Monitoring on.
 - **Keep Display On** (off by default): by default the *screen* is allowed to sleep while the *system* stays awake — best for long unattended jobs. There's also **Turn Display Off Now** to blank the screen immediately (the job keeps running).
-- **Keep Disk Active** (on by default): holds a disk-idle assertion so an HDD / iCloud sync keeps flowing during long syncs.
+- **Keep Disk Active** (off by default): holds a disk-idle assertion during long syncs. Your MacBook's internal drive is an SSD (nothing spins, nothing to keep awake), so this only matters for external hard drives or huge iCloud transfers — turn it on just for those.
 - **Download iCloud Folder Locally…**: pick any iCloud Drive folder (e.g. your GitHub backup) and it asks macOS to pull every cloud-only file down to the local disk. Keep the Mac awake until Finder shows no cloud ☁ icons next to the files.
-- **System Insights** submenu — a mini Activity Monitor in the cup:
+- **System Insights** submenu — a mini Activity Monitor in the cup (requires Background Monitoring; until enabled it just shows the opt-in):
   - *KeepAwake app: N MB* — the app's own footprint (typically 10–20 MB, ~0% CPU; it's essentially free to keep in the menu bar).
   - *Memory: X of 16 GB used — pressure: normal/high/critical* — same "used" definition as Activity Monitor.
   - *Network: ↓ / ↑ throughput* — whole-machine traffic, refreshed every 30 s.
@@ -76,3 +77,4 @@ Two settings matter so a copy actually lives on your drive, not just in the clou
 - If the lid must be closed, use `--lid-closed` and AC power.
 - Let the display sleep (leave "Keep Display On" off, or use "Turn Display Off Now") — it saves power and heat while the system keeps working.
 - On an older i5 / 16 GB machine: close browsers and heavy apps before leaving so the background job has the memory to itself — the app's Health Alerts will warn you if pressure climbs anyway.
+- Don't worry about AI apps taxing the i5 or GPU: Claude/ChatGPT-style apps do their AI computation on the provider's servers — locally they only cost memory and network, which is exactly what System Insights shows.

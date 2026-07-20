@@ -64,9 +64,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { UserDefaults.standard.object(forKey: "keepDisplay") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "keepDisplay") }
     }
-    private var keepDiskOn: Bool {   // prevent disk idle so HDD/iCloud sync keeps flowing
-        get { UserDefaults.standard.object(forKey: "keepDisk") as? Bool ?? true }
+    private var keepDiskOn: Bool {   // prevent disk idle; off by default — only needed for external HDDs / big syncs
+        get { UserDefaults.standard.object(forKey: "keepDisk") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "keepDisk") }
+    }
+    private var monitoringOn: Bool {   // background checks (ps/netstat/pmset); off by default = lightweight
+        get { UserDefaults.standard.object(forKey: "monitoring") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "monitoring") }
     }
 
     // MARK: - Lifecycle
@@ -103,8 +107,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         source.resume()
         memorySource = source
 
-        refreshInsights()
-        // Always-on 30 s tick: countdown/power checks while active, insights refresh always.
+        if monitoringOn { refreshInsights() }
+        // 30 s tick: countdown/icon while active; background checks only if monitoring is on.
         tick = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
             self?.onTick()
         }
@@ -183,9 +187,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // Fast main-thread work only; anything that spawns a subprocess goes
-    // through refreshInsights() on the background queue.
+    // through refreshInsights() on the background queue, and only when the
+    // user has opted into background monitoring.
     private func onTick() {
-        refreshInsights()
+        if monitoringOn { refreshInsights() }
         guard active else { return }
         if let end = endDate {
             let remaining = end.timeIntervalSinceNow
@@ -205,7 +210,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // Gathers everything subprocess-based off the main thread, then publishes
     // the results (and the AC-power change alert) back on the main thread.
     private func refreshInsights() {
-        if refreshing { return }
+        guard monitoringOn, !refreshing else { return }
         refreshing = true
         workQueue.async { [weak self] in
             guard let self = self else { return }
@@ -294,9 +299,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.addItem(.separator())
 
         addToggle(menu, "Effects (cup drains + timer alerts)", effectsOn, #selector(toggleEffects))
-        addToggle(menu, "Health Alerts (memory / heat / power)", healthAlertsOn, #selector(toggleHealth))
+        addToggle(menu, "Health Alerts (memory / heat)", healthAlertsOn, #selector(toggleHealth))
+        addToggle(menu, "Background Monitoring (insights + power alert)", monitoringOn, #selector(toggleMonitoring))
         addToggle(menu, "Keep Display On", keepDisplayOn, #selector(toggleDisplay))
-        addToggle(menu, "Keep Disk Active (HDD / iCloud sync)", keepDiskOn, #selector(toggleDisk))
+        addToggle(menu, "Keep Disk Active (external HDD / iCloud sync)", keepDiskOn, #selector(toggleDisk))
         menu.addItem(.separator())
 
         let displayOff = NSMenuItem(title: "Turn Display Off Now", action: #selector(displayOffNow), keyEquivalent: "d")
@@ -335,6 +341,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
             item.isEnabled = false
             m.addItem(item)
+        }
+
+        // Lightweight mode: no background checks are running, so there is no
+        // data to show — just offer the opt-in (with its confirmation popup).
+        guard monitoringOn else {
+            info("Background monitoring is off (lightweight mode)")
+            info("Keep Awake itself is unaffected and stays active")
+            m.addItem(.separator())
+            let enable = NSMenuItem(title: "Enable Background Monitoring…",
+                                    action: #selector(toggleMonitoring), keyEquivalent: "")
+            enable.target = self
+            m.addItem(enable)
+            let monitor = NSMenuItem(title: "Open Activity Monitor", action: #selector(openActivityMonitor), keyEquivalent: "")
+            monitor.target = self
+            m.addItem(monitor)
+            return m
         }
 
         // Cached values only — never spawn a subprocess while the menu is open.
@@ -516,6 +538,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     @objc private func toggleEffects() { effectsOn.toggle(); refreshIcon() }
     @objc private func toggleHealth() { healthAlertsOn.toggle() }
+
+    // Turning monitoring ON warns first — the user opted for lightweight-by-default.
+    @objc private func toggleMonitoring() {
+        wasOnAC = nil   // drop the stale sample so re-enabling can't mis-alert
+        if monitoringOn {
+            monitoringOn = false
+            return
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        let alert = NSAlert()
+        alert.messageText = "Run background checks?"
+        alert.informativeText = """
+            System Insights and the charger-unplugged alert need small system checks \
+            (ps, netstat, pmset) every 30 seconds — roughly 0.1% CPU on average.
+
+            Keep Awake itself works fine without them and stays active either way.
+            """
+        alert.addButton(withTitle: "Run Background Checks")
+        alert.addButton(withTitle: "Keep It Lightweight")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        monitoringOn = true
+        refreshInsights()
+    }
     @objc private func toggleDisplay() { keepDisplayOn.toggle(); applyOptionalAssertions() }
     @objc private func toggleDisk() { keepDiskOn.toggle(); applyOptionalAssertions() }
 
