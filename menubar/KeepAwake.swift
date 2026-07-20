@@ -286,20 +286,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Menu
 
-    // Info rows use full-contrast label color at 14 pt instead of the dimmed
-    // system gray — the default disabled-item gray is hard to read with low
-    // vision / progressive lenses.
+    // Info rows use full-contrast label color at 14 pt. They must stay
+    // ENABLED: modern macOS dims disabled items wholesale and ignores the
+    // attributed color, which made these rows unreadably faint. With
+    // autoenablesItems off and no action, they render full-strength and
+    // clicking them just closes the menu harmlessly.
     private func infoItem(_ text: String) -> NSMenuItem {
         let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
         item.attributedTitle = NSAttributedString(string: text, attributes: [
             .font: NSFont.menuFont(ofSize: 14),
             .foregroundColor: NSColor.labelColor,
         ])
-        item.isEnabled = false
+        item.isEnabled = true
         return item
     }
 
     func menuNeedsUpdate(_ menu: NSMenu) {
+        menu.autoenablesItems = false
         menu.removeAllItems()
 
         menu.addItem(infoItem(statusLine()))
@@ -396,6 +399,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func insightsMenu() -> NSMenu {
         let m = NSMenu()
+        m.autoenablesItems = false
         func info(_ text: String) { m.addItem(infoItem(text)) }
 
         // Lightweight mode: no background checks are running, so there is no
