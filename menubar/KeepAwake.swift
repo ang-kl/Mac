@@ -10,6 +10,8 @@
 //   * Display can sleep while the system stays awake; "Turn Display Off Now"
 //   * Optional disk-idle prevention so HDD/iCloud sync keeps working
 //   * "Download iCloud Folder Locally" helper (pulls cloud-only files to disk)
+//   * System Insights: own footprint, memory used/pressure, network throughput,
+//     AI apps (Claude & friends), top memory/CPU apps
 
 import AppKit
 import IOKit.pwr_mgt
@@ -28,11 +30,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private var wasOnAC: Bool?
     private var memorySource: DispatchSourceMemoryPressure?
     private var memoryState = "normal"
+    private var lastNetSample: (inBytes: Double, outBytes: Double, time: Date)?
+    private var netInKBs: Double = -1   // -1 = not measured yet
+    private var netOutKBs: Double = -1
 
     private let presets: [(label: String, hours: Double)] = [
         ("1 hour", 1), ("4 hours", 4), ("8 hours", 8), ("12 hours", 12),
         ("1 day", 24), ("2 days", 48), ("5 days", 120),
     ]
+    private let aiNames = ["claude", "chatgpt", "openai", "copilot", "ollama",
+                           "gemini", "perplexity", "cursor", "codeium"]
 
     // MARK: - Preferences
 
@@ -86,6 +93,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         source.resume()
         memorySource = source
+
+        sampleNetwork()
+        // Always-on 30 s tick: countdown/power checks while active, network sampling always.
+        tick = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
+            self?.onTick()
+        }
     }
 
     func applicationWillTerminate(_ notification: Notification) {
@@ -115,16 +128,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             endDate = nil
         }
         applyOptionalAssertions()
-        tick = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in
-            self?.onTick()
-        }
         if effectsOn { notify("Keep Awake on", "Your Mac will stay awake \(label).") }
         refreshIcon()
     }
 
     private func stop(notifyUser: Bool) {
-        tick?.invalidate()
-        tick = nil
         endDate = nil
         if active {
             IOPMAssertionRelease(sysAssertion)
@@ -166,6 +174,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     private func onTick() {
+        sampleNetwork()
+        guard active else { return }
         if let end = endDate {
             let remaining = end.timeIntervalSinceNow
             if remaining <= 0 {
@@ -222,11 +232,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let status = NSMenuItem(title: statusLine(), action: nil, keyEquivalent: "")
         status.isEnabled = false
         menu.addItem(status)
-        if memoryState != "normal" {
-            let mem = NSMenuItem(title: "Memory pressure: \(memoryState)", action: nil, keyEquivalent: "")
-            mem.isEnabled = false
-            menu.addItem(mem)
-        }
         menu.addItem(.separator())
 
         let toggle = NSMenuItem(title: active ? "Turn Off" : "Keep Awake (until turned off)",
@@ -248,6 +253,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let presetsItem = NSMenuItem(title: "Keep Awake For", action: nil, keyEquivalent: "")
         presetsItem.submenu = presetMenu
         menu.addItem(presetsItem)
+        menu.addItem(.separator())
+
+        let insightsItem = NSMenuItem(title: "System Insights", action: nil, keyEquivalent: "")
+        insightsItem.submenu = insightsMenu()
+        menu.addItem(insightsItem)
         menu.addItem(.separator())
 
         addToggle(menu, "Effects (cup drains + timer alerts)", effectsOn, #selector(toggleEffects))
@@ -282,6 +292,153 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         if d > 0 { return "Awake — \(d)d \(h)h left" }
         if h > 0 { return "Awake — \(h)h \(m)m left" }
         return "Awake — \(m)m left"
+    }
+
+    // MARK: - System Insights
+
+    private func insightsMenu() -> NSMenu {
+        let m = NSMenu()
+        func info(_ text: String) {
+            let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            m.addItem(item)
+        }
+
+        info(String(format: "KeepAwake app: %.0f MB, ~0%% CPU", ownMemoryMB()))
+        let mem = systemMemory()
+        info(String(format: "Memory: %.1f of %.0f GB used — pressure: %@", mem.usedGB, mem.totalGB, memoryState))
+        if netInKBs >= 0 {
+            info("Network: ↓ \(rateString(netInKBs))  ↑ \(rateString(netOutKBs))")
+        } else {
+            info("Network: measuring… (reopen in ~30 s)")
+        }
+        m.addItem(.separator())
+
+        let apps = aggregatedApps()
+        let ai = apps.filter { app in aiNames.contains { app.name.lowercased().contains($0) } }
+        info("AI apps running:")
+        if ai.isEmpty {
+            info("   none detected")
+        } else {
+            for app in ai.sorted(by: { $0.memMB > $1.memMB }) {
+                info(String(format: "   %@ — %@, %.0f%% CPU", app.name, memString(app.memMB), app.cpu))
+            }
+        }
+        m.addItem(.separator())
+
+        info("Top memory:")
+        for app in apps.sorted(by: { $0.memMB > $1.memMB }).prefix(5) {
+            info(String(format: "   %@ — %@", app.name, memString(app.memMB)))
+        }
+        m.addItem(.separator())
+
+        info("Top CPU:")
+        for app in apps.sorted(by: { $0.cpu > $1.cpu }).prefix(5) where app.cpu >= 1 {
+            info(String(format: "   %@ — %.0f%%", app.name, app.cpu))
+        }
+        m.addItem(.separator())
+
+        let monitor = NSMenuItem(title: "Open Activity Monitor", action: #selector(openActivityMonitor), keyEquivalent: "")
+        monitor.target = self
+        m.addItem(monitor)
+        return m
+    }
+
+    private struct AppUsage { let name: String; let memMB: Double; let cpu: Double }
+
+    // All processes, grouped by executable name (so e.g. browser helpers roll up).
+    private func aggregatedApps() -> [AppUsage] {
+        let out = run("/bin/ps", ["-axo", "rss=,pcpu=,comm="])
+        var byName: [String: (mem: Double, cpu: Double)] = [:]
+        for line in out.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: true)
+            guard parts.count == 3,
+                  let rss = Double(parts[0]),
+                  let cpu = Double(parts[1]) else { continue }
+            let name = String(parts[2]).components(separatedBy: "/").last ?? String(parts[2])
+            var entry = byName[name] ?? (0, 0)
+            entry.mem += rss / 1024
+            entry.cpu += cpu
+            byName[name] = entry
+        }
+        return byName.map { AppUsage(name: $0.key, memMB: $0.value.mem, cpu: $0.value.cpu) }
+    }
+
+    // This app's own physical footprint (what Activity Monitor's Memory column shows).
+    private func ownMemoryMB() -> Double {
+        var vmInfo = task_vm_info_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<task_vm_info_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &vmInfo) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                task_info(mach_task_self_, task_flavor_t(TASK_VM_INFO), $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return 0 }
+        return Double(vmInfo.phys_footprint) / 1_048_576
+    }
+
+    // Used = app memory + wired + compressed, same idea as Activity Monitor.
+    private func systemMemory() -> (usedGB: Double, totalGB: Double) {
+        let total = Double(ProcessInfo.processInfo.physicalMemory) / 1_073_741_824
+        var stats = vm_statistics64_data_t()
+        var count = mach_msg_type_number_t(MemoryLayout<vm_statistics64_data_t>.size / MemoryLayout<integer_t>.size)
+        let kr = withUnsafeMutablePointer(to: &stats) {
+            $0.withMemoryRebound(to: integer_t.self, capacity: Int(count)) {
+                host_statistics64(mach_host_self(), HOST_VM_INFO64, $0, &count)
+            }
+        }
+        guard kr == KERN_SUCCESS else { return (0, total) }
+        let page = Double(vm_kernel_page_size)
+        let used = (Double(stats.active_count) + Double(stats.wire_count)
+                    + Double(stats.compressor_page_count)) * page / 1_073_741_824
+        return (used, total)
+    }
+
+    // Whole-machine network totals from netstat; header-indexed so column layout
+    // changes don't misparse. Rows must align with the header to be counted.
+    private func networkTotals() -> (inBytes: Double, outBytes: Double) {
+        let out = run("/usr/sbin/netstat", ["-ib"])
+        let lines = out.split(separator: "\n")
+        guard let header = lines.first else { return (0, 0) }
+        let hcols = header.split(separator: " ", omittingEmptySubsequences: true).map(String.init)
+        guard let ibIdx = hcols.firstIndex(of: "Ibytes"),
+              let obIdx = hcols.firstIndex(of: "Obytes") else { return (0, 0) }
+        var inB = 0.0, outB = 0.0
+        for line in lines.dropFirst() {
+            guard line.contains("<Link#"), !line.hasPrefix("lo0") else { continue }
+            let cols = line.split(separator: " ", omittingEmptySubsequences: true)
+            guard cols.count == hcols.count,
+                  let i = Double(cols[ibIdx]),
+                  let o = Double(cols[obIdx]) else { continue }
+            inB += i
+            outB += o
+        }
+        return (inB, outB)
+    }
+
+    private func sampleNetwork() {
+        let totals = networkTotals()
+        let now = Date()
+        if let last = lastNetSample {
+            let dt = now.timeIntervalSince(last.time)
+            if dt > 1 {
+                netInKBs = max(0, (totals.inBytes - last.inBytes) / dt / 1024)
+                netOutKBs = max(0, (totals.outBytes - last.outBytes) / dt / 1024)
+            }
+        }
+        lastNetSample = (totals.inBytes, totals.outBytes, now)
+    }
+
+    private func memString(_ mb: Double) -> String {
+        mb >= 1024 ? String(format: "%.1f GB", mb / 1024) : String(format: "%.0f MB", mb)
+    }
+
+    private func rateString(_ kbs: Double) -> String {
+        kbs >= 1024 ? String(format: "%.1f MB/s", kbs / 1024) : String(format: "%.0f KB/s", kbs)
+    }
+
+    @objc private func openActivityMonitor() {
+        NSWorkspace.shared.open(URL(fileURLWithPath: "/System/Applications/Utilities/Activity Monitor.app"))
     }
 
     // MARK: - Actions
