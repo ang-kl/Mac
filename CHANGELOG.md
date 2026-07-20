@@ -16,3 +16,4 @@ rebuild (`cd menubar && ./build.sh`).
 | v0.0.007 | #7 | High-contrast 14 pt menu text, menu-bar countdown in last 15 min, one-time iCloud folder setup with hourly auto-download |
 | v0.0.008 | #8 | Versioning scheme, this changelog, running version shown inside the menu |
 | v0.0.009 | #9 | iCloud auto-download timing submenu (30 min / 1 h / 3 h / 6 h) and resource intelligence (skip + retry while hot / low memory / on battery); version format finalized as v0.0.### |
+| v0.0.010 | #11 | Auto-download also yields to AI work: scheduled runs are skipped and retried while Claude (CLI or app) or another AI process is actively using CPU |
