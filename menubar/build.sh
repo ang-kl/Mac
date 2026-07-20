@@ -25,7 +25,7 @@ cat > "$APP/Contents/Info.plist" <<'EOF'
     <key>CFBundleIdentifier</key>      <string>local.keepawake</string>
     <key>CFBundleName</key>            <string>KeepAwake</string>
     <key>CFBundlePackageType</key>     <string>APPL</string>
-    <key>CFBundleShortVersionString</key> <string>2.1</string>
+    <key>CFBundleShortVersionString</key> <string>2.2</string>
     <key>LSMinimumSystemVersion</key>  <string>10.13</string>
     <key>LSUIElement</key>             <true/>
 </dict>
