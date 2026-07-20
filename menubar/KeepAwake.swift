@@ -72,11 +72,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { UserDefaults.standard.object(forKey: "monitoring") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "monitoring") }
     }
+    private var autoDownloadPath: String? {   // iCloud folder to keep fully local
+        get { UserDefaults.standard.string(forKey: "icloudAutoPath") }
+        set { UserDefaults.standard.set(newValue, forKey: "icloudAutoPath") }
+    }
+    private var autoDownloadOn: Bool {   // re-request the download hourly while awake
+        get { UserDefaults.standard.object(forKey: "icloudAutoOn") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "icloudAutoOn") }
+    }
+    private var lastAutoDownload: Date?
 
     // MARK: - Lifecycle
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         let menu = NSMenu()
         menu.delegate = self
         statusItem.menu = menu
@@ -192,6 +201,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func onTick() {
         if monitoringOn { refreshInsights() }
         guard active else { return }
+        if autoDownloadOn, let path = autoDownloadPath,
+           lastAutoDownload.map({ Date().timeIntervalSince($0) > 3600 }) ?? true {
+            performICloudDownload(path, announce: false)
+        }
         if let end = endDate {
             let remaining = end.timeIntervalSinceNow
             if remaining <= 0 {
@@ -264,12 +277,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     // MARK: - Menu
 
+    // Info rows use full-contrast label color at 14 pt instead of the dimmed
+    // system gray — the default disabled-item gray is hard to read with low
+    // vision / progressive lenses.
+    private func infoItem(_ text: String) -> NSMenuItem {
+        let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
+        item.attributedTitle = NSAttributedString(string: text, attributes: [
+            .font: NSFont.menuFont(ofSize: 14),
+            .foregroundColor: NSColor.labelColor,
+        ])
+        item.isEnabled = false
+        return item
+    }
+
     func menuNeedsUpdate(_ menu: NSMenu) {
         menu.removeAllItems()
 
-        let status = NSMenuItem(title: statusLine(), action: nil, keyEquivalent: "")
-        status.isEnabled = false
-        menu.addItem(status)
+        menu.addItem(infoItem(statusLine()))
         menu.addItem(.separator())
 
         let toggle = NSMenuItem(title: active ? "Turn Off" : "Keep Awake (until turned off)",
@@ -308,9 +332,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         let displayOff = NSMenuItem(title: "Turn Display Off Now", action: #selector(displayOffNow), keyEquivalent: "d")
         displayOff.target = self
         menu.addItem(displayOff)
-        let icloud = NSMenuItem(title: "Download iCloud Folder Locally…", action: #selector(downloadICloudFolder), keyEquivalent: "")
+        let icloud = NSMenuItem(title: autoDownloadPath == nil ? "Download iCloud Folder Locally…"
+                                                               : "Change iCloud Folder…",
+                                action: #selector(downloadICloudFolder), keyEquivalent: "")
         icloud.target = self
         menu.addItem(icloud)
+        if let path = autoDownloadPath {
+            let name = (path as NSString).lastPathComponent
+            addToggle(menu, "Auto-Download \"\(name)\" hourly while awake",
+                      autoDownloadOn, #selector(toggleAutoDownload))
+        }
         menu.addItem(.separator())
 
         menu.addItem(NSMenuItem(title: "Quit KeepAwake", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
@@ -337,11 +368,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func insightsMenu() -> NSMenu {
         let m = NSMenu()
-        func info(_ text: String) {
-            let item = NSMenuItem(title: text, action: nil, keyEquivalent: "")
-            item.isEnabled = false
-            m.addItem(item)
-        }
+        func info(_ text: String) { m.addItem(infoItem(text)) }
 
         // Lightweight mode: no background checks are running, so there is no
         // data to show — just offer the opt-in (with its confirmation popup).
@@ -568,29 +595,59 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         spawn("/usr/bin/pmset", ["displaysleepnow"])
     }
 
-    // Pull cloud-only (evicted) iCloud files down to the local disk, so e.g. a
-    // GitHub backup folder in iCloud Drive is fully copied locally.
+    // One-time setup: pick the iCloud folder, offer hourly auto-download, and
+    // kick off the first download. After this, no manual steps are needed.
     @objc private func downloadICloudFolder() {
         NSApp.activate(ignoringOtherApps: true)
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.canChooseFiles = false
         panel.prompt = "Download"
-        panel.message = "Choose an iCloud Drive folder to fully download to this Mac"
+        panel.message = "Choose an iCloud Drive folder to keep fully downloaded on this Mac"
         panel.directoryURL = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("Library/Mobile Documents/com~apple~CloudDocs")
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        var queued = 0
-        let fm = FileManager.default
-        try? fm.startDownloadingUbiquitousItem(at: url)
-        if let walker = fm.enumerator(at: url, includingPropertiesForKeys: nil) {
-            for case let file as URL in walker {
-                if (try? fm.startDownloadingUbiquitousItem(at: file)) != nil { queued += 1 }
+        autoDownloadPath = url.path
+
+        let alert = NSAlert()
+        alert.messageText = "Keep \"\(url.lastPathComponent)\" auto-downloaded?"
+        alert.informativeText = """
+            KeepAwake can re-request the download every hour while Keep Awake is on, \
+            so this folder always stays fully on this Mac — no further steps from you.
+            """
+        alert.addButton(withTitle: "Auto-Download Hourly")
+        alert.addButton(withTitle: "Just This Once")
+        autoDownloadOn = alert.runModal() == .alertFirstButtonReturn
+        performICloudDownload(url.path, announce: true)
+    }
+
+    @objc private func toggleAutoDownload() {
+        autoDownloadOn.toggle()
+    }
+
+    // Walks the folder on the background queue (a big folder must never block
+    // the main thread) and asks macOS to download every cloud-only file.
+    private func performICloudDownload(_ path: String, announce: Bool) {
+        lastAutoDownload = Date()
+        workQueue.async { [weak self] in
+            guard let self = self else { return }
+            let url = URL(fileURLWithPath: path)
+            let fm = FileManager.default
+            var queued = 0
+            try? fm.startDownloadingUbiquitousItem(at: url)
+            if let walker = fm.enumerator(at: url, includingPropertiesForKeys: nil) {
+                for case let file as URL in walker {
+                    if (try? fm.startDownloadingUbiquitousItem(at: file)) != nil { queued += 1 }
+                }
+            }
+            if announce {
+                DispatchQueue.main.async {
+                    self.notify("iCloud download requested",
+                                queued > 0 ? "Requested download of \(queued) item(s). Done when Finder shows no cloud icons."
+                                           : "Folder appears to be fully local already (or not in iCloud).")
+                }
             }
         }
-        notify("iCloud download started",
-               queued > 0 ? "Requested download of \(queued) item(s). Keep the Mac awake until Finder shows no cloud icons."
-                          : "Folder appears to be fully local already (or not in iCloud).")
     }
 
     // MARK: - Icon
@@ -606,7 +663,16 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             }
         }
         button.image = cupImage(fill: fill)
-        button.toolTip = statusLine()
+        // Last 15 minutes: show the countdown as text right in the menu bar —
+        // readable at a glance, no color or hover needed.
+        if active, let end = endDate, end.timeIntervalSinceNow > 0, end.timeIntervalSinceNow <= 15 * 60 {
+            button.imagePosition = .imageLeft
+            button.title = " \(max(1, Int(end.timeIntervalSinceNow / 60)))m"
+        } else {
+            button.imagePosition = .imageOnly
+            button.title = ""
+        }
+        button.toolTip = statusLine() + " — hover anytime to see this"
     }
 
     // Hand-drawn template cup: outline + coffee level (alpha-only, adapts to menu-bar theme).
