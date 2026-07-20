@@ -643,7 +643,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             KeepAwake can re-request the download on a schedule while Keep Awake is on \
             (every hour by default — change it under Auto-Download Timing), so this \
             folder always stays fully on this Mac. Runs are skipped automatically while \
-            the Mac is hot, low on memory, or on battery, and retried later.
+            the Mac is hot, low on memory, on battery, or while Claude or another AI \
+            app is actively working, and retried later.
             """
         alert.addButton(withTitle: "Auto-Download on Schedule")
         alert.addButton(withTitle: "Just This Once")
@@ -671,7 +672,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
                 let hot = thermal == .serious || thermal == .critical
                 let memBusy = DispatchQueue.main.sync { self.memoryState != "normal" }
                 let onBattery = !self.onACPower()
-                if hot || memBusy || onBattery { return }
+                if hot || memBusy || onBattery || self.aiBusy() { return }
             }
             DispatchQueue.main.async { self.lastAutoDownload = Date() }
             let url = URL(fileURLWithPath: path)
@@ -753,6 +754,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
     private func onACPower() -> Bool {
         run("/usr/bin/pmset", ["-g", "batt"]).contains("AC Power")
+    }
+
+    // True while an AI process (Claude CLI/app, ChatGPT, …) is actively
+    // working (>= 10% CPU). An idle open app doesn't count — otherwise the
+    // auto-download would never get a turn. workQueue only (spawns ps).
+    private func aiBusy() -> Bool {
+        let out = run("/bin/ps", ["-axo", "pcpu=,comm="])
+        for line in out.split(separator: "\n") {
+            let parts = line.split(separator: " ", maxSplits: 1, omittingEmptySubsequences: true)
+            guard parts.count == 2, let cpu = Double(parts[0]), cpu >= 10 else { continue }
+            let name = (String(parts[1]).components(separatedBy: "/").last ?? "").lowercased()
+            if aiNames.contains(where: { name.contains($0) }) { return true }
+        }
+        return false
     }
 
     // Blocking with a hard deadline; call ONLY from workQueue, never the main
