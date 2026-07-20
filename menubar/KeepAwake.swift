@@ -344,7 +344,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         }
         menu.addItem(.separator())
 
+        menu.addItem(infoItem("KeepAwake v\(appVersion)"))
         menu.addItem(NSMenuItem(title: "Quit KeepAwake", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
+    }
+
+    // Version from the bundle's Info.plist (set by build.sh); "dev" when run
+    // as a bare binary outside the .app bundle.
+    private var appVersion: String {
+        (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String) ?? "dev"
     }
 
     private func addToggle(_ menu: NSMenu, _ title: String, _ on: Bool, _ action: Selector) {
