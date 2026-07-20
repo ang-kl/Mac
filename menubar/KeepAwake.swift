@@ -72,6 +72,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         get { UserDefaults.standard.object(forKey: "monitoring") as? Bool ?? false }
         set { UserDefaults.standard.set(newValue, forKey: "monitoring") }
     }
+    private var idleCountdownOn: Bool {   // timed hours only burn while the user is away
+        get { UserDefaults.standard.object(forKey: "idleCountdown") as? Bool ?? false }
+        set { UserDefaults.standard.set(newValue, forKey: "idleCountdown") }
+    }
     private var autoDownloadPath: String? {   // iCloud folder to keep fully local
         get { UserDefaults.standard.string(forKey: "icloudAutoPath") }
         set { UserDefaults.standard.set(newValue, forKey: "icloudAutoPath") }
@@ -206,6 +210,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     private func onTick() {
         if monitoringOn { refreshInsights() }
         guard active else { return }
+        // Idle-aware countdown: if the user touched the Mac during this tick,
+        // push the deadline forward so the chosen hours only burn while away.
+        if idleCountdownOn, endDate != nil, userIdleSeconds() < 30 {
+            endDate = endDate?.addingTimeInterval(30)
+        }
         // Auto-download when the interval elapsed; if the last try was skipped
         // for lack of resources, re-check no more often than every 5 minutes.
         if autoDownloadOn, let path = autoDownloadPath,
@@ -337,6 +346,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         addToggle(menu, "Effects (cup drains + timer alerts)", effectsOn, #selector(toggleEffects))
         addToggle(menu, "Health Alerts (memory / heat)", healthAlertsOn, #selector(toggleHealth))
         addToggle(menu, "Background Monitoring (insights + power alert)", monitoringOn, #selector(toggleMonitoring))
+        addToggle(menu, "Countdown Only While Idle", idleCountdownOn, #selector(toggleIdleCountdown))
         addToggle(menu, "Keep Display On", keepDisplayOn, #selector(toggleDisplay))
         addToggle(menu, "Keep Disk Active (external HDD / iCloud sync)", keepDiskOn, #selector(toggleDisk))
         menu.addItem(.separator())
@@ -390,9 +400,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         guard let end = endDate else { return "Awake until turned off" }
         let r = max(0, Int(end.timeIntervalSinceNow))
         let d = r / 86400, h = (r % 86400) / 3600, m = (r % 3600) / 60
-        if d > 0 { return "Awake — \(d)d \(h)h left" }
-        if h > 0 { return "Awake — \(h)h \(m)m left" }
-        return "Awake — \(m)m left"
+        let paused = idleCountdownOn && userIdleSeconds() < 30 ? " (paused while you work)" : ""
+        if d > 0 { return "Awake — \(d)d \(h)h left" + paused }
+        if h > 0 { return "Awake — \(h)h \(m)m left" + paused }
+        return "Awake — \(m)m left" + paused
+    }
+
+    // Seconds since the last keyboard/mouse/trackpad input. Cheap in-process
+    // API (no subprocess, no Accessibility permission); min across the common
+    // input event types stands in for "any input".
+    private func userIdleSeconds() -> TimeInterval {
+        let events: [CGEventType] = [.keyDown, .mouseMoved, .leftMouseDown, .rightMouseDown, .scrollWheel]
+        return events.map {
+            CGEventSource.secondsSinceLastEventType(.combinedSessionState, eventType: $0)
+        }.min() ?? .infinity
     }
 
     // MARK: - System Insights
@@ -596,6 +617,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     @objc private func toggleEffects() { effectsOn.toggle(); refreshIcon() }
+    @objc private func toggleIdleCountdown() { idleCountdownOn.toggle() }
     @objc private func toggleHealth() { healthAlertsOn.toggle() }
 
     // Turning monitoring ON warns first — the user opted for lightweight-by-default.
